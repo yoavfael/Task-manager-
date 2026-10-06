@@ -6,7 +6,7 @@
  *   BOT_TOKEN        token from @BotFather              (secret)
  *   WEBHOOK_KEY      created by generateWebhookKey()     (secret)
  *   SHEET_ID         spreadsheet ID from its URL
- *   SHEET_NAME       tab name (optional, defaults to the first tab)
+ *   SHEET_NAME       tab name (optional, defaults to DEFAULT_SHEET_NAME)
  *   ALLOWED_USER_ID  your Telegram numeric user id (from getMyId)
  *   WEB_APP_URL      the deployed /exec URL
  */
@@ -16,6 +16,9 @@ const P = PropertiesService.getScriptProperties();
 // Column layout of the tasks sheet (1-based)
 const COL = { DATE: 1, TASK: 2, WHEN: 3, AREA: 4, STATUS: 5, NOTES: 6 };
 const DATE_FORMAT = 'd/m/yy';
+const DEFAULT_SHEET_NAME = 'משימות שוטפות';
+// Open tasks are marked "לא בוצע" so they show up in the "בביצוע + לא בוצע" filter view
+const NEW_STATUS = 'לא בוצע';
 
 function doPost(e) {
   // Apps Script cannot read request headers, so the shared secret travels in the URL
@@ -56,6 +59,8 @@ function addTask(text) {
 
   sheet.getRange(row, COL.DATE, 1, 2).setValues([[today, text]]);
   sheet.getRange(row, COL.DATE).setNumberFormat(DATE_FORMAT);
+  sheet.getRange(row, COL.STATUS).setValue(NEW_STATUS);
+  extendFilter(sheet, row);
 
   P.setProperty('LAST_ADDED', JSON.stringify({ row: row, text: text }));
   return '✅ נוספה (שורה ' + row + '):\n' + text;
@@ -75,9 +80,29 @@ function undoLast() {
 }
 
 function getSheet() {
-  const ss = SpreadsheetApp.openById(P.getProperty('SHEET_ID'));
-  const name = P.getProperty('SHEET_NAME');
-  return name ? ss.getSheetByName(name) : ss.getSheets()[0];
+  const name = P.getProperty('SHEET_NAME') || DEFAULT_SHEET_NAME;
+  const sheet = SpreadsheetApp.openById(P.getProperty('SHEET_ID')).getSheetByName(name);
+  if (!sheet) throw new Error('Sheet tab not found: ' + name);
+  return sheet;
+}
+
+// Rows written by a script are not guaranteed to join an existing filter range;
+// rebuild the filter over the larger range with the same column criteria
+function extendFilter(sheet, row) {
+  const filter = sheet.getFilter();
+  if (!filter) return;
+  const range = filter.getRange();
+  if (range.getLastRow() >= row) return;
+
+  const first = range.getColumn();
+  const criteria = [];
+  for (let c = first; c <= range.getLastColumn(); c++) {
+    const cr = filter.getColumnFilterCriteria(c);
+    if (cr) criteria.push([c, cr.copy().build()]);
+  }
+  filter.remove();
+  const newFilter = sheet.getRange(range.getRow(), first, row - range.getRow() + 1, range.getNumColumns()).createFilter();
+  criteria.forEach(([c, cr]) => newFilter.setColumnFilterCriteria(c, cr));
 }
 
 // appendRow() would land below any stray cell in any column; anchor on the task column instead
